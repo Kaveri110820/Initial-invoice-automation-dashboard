@@ -1,0 +1,28 @@
+# Virtual environment
+venv/
+.venv/
+env/
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment variables
+.env
+
+# Database
+invoices.db
+
+# Uploaded files
+uploads/*.pdf
+
+# Streamlit cache
+.streamlit/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
