@@ -7,15 +7,19 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+import auth
 from ai_extractor import extract_with_ai
 from database import (
     add_invoice,
     delete_invoice,
+    delete_user,
     find_duplicate,
     get_all_invoices,
+    get_all_users,
     get_invoice_by_id,
     initialize_database,
     update_invoice_status,
+    update_user_role,
 )
 from extractor import extract_invoice_data, extract_text_from_pdf
 
@@ -25,6 +29,146 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 st.set_page_config(page_title="Invoice Dashboard", page_icon=":receipt:", layout="wide")
 
 initialize_database()
+
+# ---------------------------------------------------------------------------
+# Authentication
+# ---------------------------------------------------------------------------
+def _render_signin():
+    st.markdown("## Sign In")
+    with st.form("signin_form", clear_on_submit=False):
+        email = st.text_input("Email")
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Sign In")
+
+    if submitted:
+        if not email.strip():
+            st.error("Email is required.")
+        elif not password:
+            st.error("Password is required.")
+        else:
+            ok, err = auth.login(email, password)
+            if ok:
+                st.session_state["auth_page"] = None
+                st.rerun()
+            else:
+                st.error(err)
+
+    if st.button("Don't have an account? Sign Up"):
+        st.session_state["auth_page"] = "signup"
+        st.rerun()
+
+    if st.button("Forgot password?"):
+        st.session_state["auth_page"] = "forgot"
+        st.rerun()
+
+
+def _render_signup():
+    st.markdown("## Sign Up")
+    with st.form("signup_form", clear_on_submit=False):
+        full_name = st.text_input("Full Name")
+        email = st.text_input("Email")
+        password = st.text_input("Password", type="password")
+        confirm = st.text_input("Confirm Password", type="password")
+        submitted = st.form_submit_button("Create Account")
+
+    if submitted:
+        if not full_name.strip():
+            st.error("Full name is required.")
+        elif not email.strip():
+            st.error("Email is required.")
+        elif not password:
+            st.error("Password is required.")
+        elif password != confirm:
+            st.error("Passwords do not match.")
+        else:
+            ok, err = auth.create_user(full_name, email, password)
+            if ok:
+                st.session_state["auth_page"] = "signin"
+                st.success("Account created. Please sign in.")
+                st.rerun()
+            else:
+                st.error(err)
+
+    if st.button("Already have an account? Sign In"):
+        st.session_state["auth_page"] = "signin"
+        st.rerun()
+
+
+def _render_forgot():
+    st.markdown("## Forgot Password")
+    st.caption("Enter your account email to receive a password reset token.")
+    with st.form("forgot_form", clear_on_submit=False):
+        email = st.text_input("Email")
+        submitted = st.form_submit_button("Request Reset")
+    if submitted:
+        if not email.strip():
+            st.error("Email is required.")
+        else:
+            ok, token = auth.request_password_reset(email)
+            if ok:
+                st.success("A reset token has been generated.")
+                st.session_state["reset_email"] = email.strip().lower()
+                st.session_state["auth_page"] = "reset"
+                st.rerun()
+            else:
+                st.info(token)
+
+    if st.button("Back to Sign In"):
+        st.session_state["auth_page"] = "signin"
+        st.rerun()
+
+
+def _render_reset():
+    st.markdown("## Reset Password")
+    st.caption("Enter the reset token and choose a new password.")
+    with st.form("reset_form", clear_on_submit=False):
+        token = st.text_input("Reset Token")
+        new_password = st.text_input("New Password", type="password")
+        confirm = st.text_input("Confirm New Password", type="password")
+        submitted = st.form_submit_button("Reset Password")
+    if submitted:
+        if not token.strip():
+            st.error("Reset token is required.")
+        elif not new_password:
+            st.error("New password is required.")
+        elif new_password != confirm:
+            st.error("Passwords do not match.")
+        else:
+            email = st.session_state.get("reset_email", "")
+            ok, err = auth.reset_password(email, token.strip(), new_password)
+            if ok:
+                st.success("Password updated. Please sign in with your new password.")
+                st.session_state["auth_page"] = "signin"
+                st.rerun()
+            else:
+                st.error(err)
+
+    if st.button("Back to Sign In"):
+        st.session_state["auth_page"] = "signin"
+        st.rerun()
+
+
+if not auth.is_logged_in():
+    st.set_page_config(page_title="Invoice Dashboard", page_icon=":receipt:", layout="wide")
+    st.markdown(
+        "<h1 style='text-align:center;'>Invoice Automation Dashboard</h1>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<p style='text-align:center;color:#888;'>Sign in to manage and process invoices.</p>",
+        unsafe_allow_html=True,
+    )
+    st.markdown("")
+    page = st.session_state.get("auth_page", "signin")
+    if page == "signup":
+        _render_signup()
+    elif page == "forgot":
+        _render_forgot()
+    elif page == "reset":
+        _render_reset()
+    else:
+        _render_signin()
+    st.stop()
 
 st.markdown(
     """
@@ -85,6 +229,7 @@ PAGES = {
     "Invoice Management": "management",
     "Approval Center": "approval",
     "Analytics": "analytics",
+    "User Management": "users",
 }
 
 PAGE_ICONS = {
@@ -93,6 +238,7 @@ PAGE_ICONS = {
     "Invoice Management": "Invoice Management",
     "Approval Center": "Approval Center",
     "Analytics": "Analytics",
+    "User Management": "User Management",
 }
 
 STATUS_COLORS = {"Pending": "#FFC107", "Approved": "#4CAF50", "Rejected": "#F44336"}
@@ -119,10 +265,19 @@ def _chart_layout(**overrides):
 # ---------------------------------------------------------------------------
 with st.sidebar:
     st.markdown("## Invoice System")
+    user = auth.get_current_user()
+    if user:
+        st.markdown(f"**Signed in as:** {user.get('full_name', user.get('email'))}")
+        st.caption(user.get("email", ""))
+        st.caption(f"Role: {user.get('role', 'Employee')}")
+        if st.button("Logout", use_container_width=True):
+            auth.logout()
+            st.rerun()
     st.markdown("---")
+    visible_keys = [k for k in PAGES if PAGES[k] != "users" or auth.is_admin()]
     selected = st.radio(
         "Navigation",
-        list(PAGES.keys()),
+        visible_keys,
         format_func=lambda x: PAGE_ICONS.get(x, x),
         label_visibility="collapsed",
     )
@@ -177,7 +332,7 @@ def _render_dashboard():
                 color_discrete_map=STATUS_COLORS,
             )
             fig.update_traces(
-                textinfo="label+count",
+                textinfo="label+value",
                 textfont_size=13,
                 hovertemplate="%{label}<br>Count: %{value}<br>Share: %{percent}<extra></extra>",
             )
@@ -471,6 +626,11 @@ def _render_approval():
         st.code(inv["extracted_text"], language=None)
 
     st.markdown("---")
+
+    if not auth.is_admin():
+        st.info("You have read-only access to the Approval Center. Only an Administrator can approve or reject invoices.")
+        return
+
     a1, a2 = st.columns(2)
 
     with a1:
@@ -544,7 +704,7 @@ def _render_analytics():
             color_discrete_map=STATUS_COLORS, hole=0.45,
         )
         fig_donut.update_traces(
-            textinfo="label+count",
+            textinfo="label+value",
             hovertemplate="%{label}<br>Count: %{value}<br>Share: %{percent}<extra></extra>",
         )
         fig_donut.update_layout(**_chart_layout())
@@ -630,6 +790,73 @@ def _render_analytics():
     )
 
 # ---------------------------------------------------------------------------
+# Page: User Management (Admin only)
+# ---------------------------------------------------------------------------
+
+def _render_users():
+    if not auth.is_admin():
+        st.error("You do not have permission to access User Management.")
+        return
+    st.markdown("# User Management")
+    st.markdown("Manage user accounts and roles.")
+    st.markdown("")
+
+    users = get_all_users()
+    if not users:
+        st.info("No users found.")
+        return
+
+    df = pd.DataFrame(users)
+    df["created_at"] = df["created_at"].astype(str)
+    st.dataframe(
+        df[["id", "full_name", "email", "role", "created_at"]],
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "id": st.column_config.NumberColumn("ID", width="small"),
+            "full_name": st.column_config.TextColumn("Full Name"),
+            "email": st.column_config.TextColumn("Email"),
+            "role": st.column_config.TextColumn("Role"),
+            "created_at": st.column_config.TextColumn("Created"),
+        },
+    )
+
+    st.markdown("#### Change Role")
+    cur = auth.get_current_user()
+    target = st.selectbox(
+        "Select user",
+        users,
+        format_func=lambda u: f"{u['full_name']} ({u['email']}) — {u['role']}",
+        key="role_target",
+    )
+    new_role = st.selectbox("New role", list(auth.ROLES), key="role_new")
+    if st.button("Update Role", key="update_role"):
+        if target["id"] == cur.get("id"):
+            st.error("You cannot change your own role.")
+        elif new_role == target["role"]:
+            st.info("Role is already set to that value.")
+        else:
+            update_user_role(target["id"], new_role)
+            st.success(f"Role for {target['email']} updated to {new_role}.")
+            st.rerun()
+
+    st.markdown("#### Remove User")
+    del_target = st.selectbox(
+        "Select user to remove",
+        users,
+        format_func=lambda u: f"{u['full_name']} ({u['email']})",
+        key="del_target",
+    )
+    if st.button("Delete User", type="secondary", key="delete_user"):
+        if del_target["id"] == cur.get("id"):
+            st.error("You cannot delete your own account.")
+        else:
+            delete_user(del_target["id"])
+            st.success(f"User {del_target['email']} deleted.")
+            st.rerun()
+
+
+# ---------------------------------------------------------------------------
 # Router
 # ---------------------------------------------------------------------------
 
@@ -639,6 +866,7 @@ page_map = {
     "management": _render_management,
     "approval": _render_approval,
     "analytics": _render_analytics,
+    "users": _render_users,
 }
 
 page_map[PAGES[selected]]()

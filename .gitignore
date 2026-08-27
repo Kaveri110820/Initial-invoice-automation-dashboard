@@ -15,7 +15,7 @@ __pycache__/
 invoices.db
 
 # Uploaded files
-uploads/*.pdf
+uploads/
 
 # Streamlit cache
 .streamlit/

@@ -34,6 +34,28 @@ def initialize_database():
             )
         """)
 
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                full_name     TEXT NOT NULL,
+                email         TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                role          TEXT NOT NULL DEFAULT 'Employee',
+                created_at    TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                email       TEXT NOT NULL,
+                token_hash  TEXT NOT NULL,
+                expires_at  TEXT NOT NULL,
+                used        INTEGER DEFAULT 0,
+                created_at  TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
 
 def add_invoice(data: dict) -> int:
     sql = """
@@ -127,3 +149,85 @@ def delete_invoice(invoice_id: int) -> bool:
     with _get_connection() as conn:
         cursor = conn.execute(sql, (invoice_id,))
         return cursor.rowcount > 0
+
+
+def add_user(full_name: str, email: str, password_hash: str, role: str = "Employee") -> int | None:
+    sql = """
+        INSERT INTO users (full_name, email, password_hash, role)
+        VALUES (?, ?, ?, ?)
+    """
+    with _get_connection() as conn:
+        try:
+            cursor = conn.execute(sql, (full_name, email, password_hash, role))
+            return cursor.lastrowid
+        except sqlite3.IntegrityError:
+            return None
+
+
+def get_user_by_email(email: str) -> dict | None:
+    conn = _get_connection()
+    try:
+        sql = "SELECT id, full_name, email, password_hash, role, created_at FROM users WHERE email = ?"
+        row = conn.execute(sql, (email,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_all_users() -> list[dict]:
+    conn = _get_connection()
+    try:
+        rows = conn.execute("SELECT id, full_name, email, role, created_at FROM users ORDER BY id").fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def update_user_role(user_id: int, role: str) -> bool:
+    sql = "UPDATE users SET role = ? WHERE id = ?"
+    with _get_connection() as conn:
+        cursor = conn.execute(sql, (role, user_id))
+        return cursor.rowcount > 0
+
+
+def delete_user(user_id: int) -> bool:
+    sql = "DELETE FROM users WHERE id = ?"
+    with _get_connection() as conn:
+        cursor = conn.execute(sql, (user_id,))
+        return cursor.rowcount > 0
+
+
+def update_user_password(user_id: int, password_hash: str) -> bool:
+    sql = "UPDATE users SET password_hash = ? WHERE id = ?"
+    with _get_connection() as conn:
+        cursor = conn.execute(sql, (password_hash, user_id))
+        return cursor.rowcount > 0
+
+
+def create_reset_token(hashed_token: str, email: str, expires_at: str) -> int:
+    sql = """
+        INSERT INTO password_reset_tokens (email, token_hash, expires_at)
+        VALUES (?, ?, ?)
+    """
+    with _get_connection() as conn:
+        cursor = conn.execute(sql, (email, hashed_token, expires_at))
+        return cursor.lastrowid
+
+
+def get_valid_reset_token(hashed_token: str) -> dict | None:
+    conn = _get_connection()
+    try:
+        sql = """
+            SELECT * FROM password_reset_tokens
+            WHERE token_hash = ? AND used = 0
+            ORDER BY id DESC LIMIT 1
+        """
+        row = conn.execute(sql, (hashed_token,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def mark_reset_token_used(token_id: int) -> None:
+    with _get_connection() as conn:
+        conn.execute("UPDATE password_reset_tokens SET used = 1 WHERE id = ?", (token_id,))
